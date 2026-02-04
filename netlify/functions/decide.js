@@ -6,84 +6,65 @@ const supabase = createClient(
 );
 
 export async function handler(event) {
-  try {
-    if (event.httpMethod !== "POST") {
-      return { statusCode: 405, body: "Method Not Allowed" };
+  const body = JSON.parse(event.body || "{}");
+  const metadata = body.metadata || {};
+
+  // 1) registrar evento
+  const { data: ev } = await supabase
+    .from("genealogical_events")
+    .insert({
+      source: "api",
+      type: "decision_request",
+      payload: metadata
+    })
+    .select("id")
+    .single();
+
+  // 2) buscar genes ativos
+  const { data: genes } = await supabase
+    .from("cognitive_dna")
+    .select("*")
+    .eq("active", true);
+
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const gene of genes) {
+    let match = true;
+    const pattern = gene.pattern || {};
+
+    for (const key in pattern) {
+      const rule = pattern[key];
+      if (rule.gte !== undefined && !(metadata[key] >= rule.gte)) {
+        match = false;
+      }
     }
 
-    const body = JSON.parse(event.body || "{}");
-
-    if (!body.event_id) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          ok: false,
-          error: "event_id is required",
-        }),
-      };
+    if (match && gene.weight > bestScore) {
+      bestScore = gene.weight;
+      best = gene;
     }
-
-    // Buscar regra ativa (observer)
-    const { data: rule, error: ruleError } = await supabase
-      .from("rules")
-      .select("*")
-      .eq("active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .single();
-
-    if (ruleError || !rule) {
-      return {
-        statusCode: 500,
-        body: JSON.stringify({
-          ok: false,
-          error: "No active rule found",
-        }),
-      };
-    }
-
-    // Registrar decisão
-    const decisionPayload = {
-      rule_type: rule.rule_type,
-      action: rule.rule_payload.action,
-      description: rule.rule_payload.description,
-    };
-
-    const { data: decision, error: decisionError } = await supabase
-      .from("decisions")
-      .insert({
-        event_id: body.event_id,
-        rule_id: rule.id,
-        decision_payload: decisionPayload,
-        confidence: rule.weight,
-      })
-      .select()
-      .single();
-
-    if (decisionError) {
-      return {
-        statusCode: 500,
-        body: JSON.stringify({
-          ok: false,
-          error: "Decision insert failed",
-        }),
-      };
-    }
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        ok: true,
-        decision,
-      }),
-    };
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        ok: false,
-        error: "Unexpected error",
-      }),
-    };
   }
+
+  const decision = best?.response || { decision: "observe" };
+
+  // 3) registrar decisão
+  const { data: dec } = await supabase
+    .from("genealogical_decisions")
+    .insert({
+      event_id: ev.id,
+      decision,
+      confidence: best?.weight || 1
+    })
+    .select("id")
+    .single();
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify({
+      event_id: ev.id,
+      decision_id: dec.id,
+      decision
+    })
+  };
 }
