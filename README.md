@@ -1,0 +1,1 @@
+# ia-genealogica-core
