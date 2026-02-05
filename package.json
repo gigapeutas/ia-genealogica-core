@@ -1,9 +1,9 @@
 {
   "name": "ia-genealogica-core",
   "version": "1.0.0",
-  "description": "Core da IA Genealógica com Netlify Functions + Supabase",
   "type": "module",
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.5"
+    "@supabase/supabase-js": "^2.39.0",
+    "googleapis": "^133.0.0"
   }
 }
