@@ -1,68 +1,69 @@
-import { google } from "googleapis";
+import { getDrive } from "./_google_drive.js";
 
-function cors() {
+function json(statusCode, body) {
   return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Token",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    statusCode,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "Content-Type, Authorization, X-API-Token",
+    },
+    body: JSON.stringify(body),
   };
 }
 
-function isAuthorized(event) {
-  const token = process.env.API_TOKEN;
-  if (!token) return true; // se não setar API_TOKEN, fica aberto
-  const header = event.headers["x-api-token"] || event.headers["X-API-Token"];
-  return header === token;
-}
-
-const auth = new google.auth.JWT(
-  process.env.GOOGLE_CLIENT_EMAIL,
-  null,
-  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-  // leitura
-  ["https://www.googleapis.com/auth/drive.readonly"]
-);
-
-const drive = google.drive({ version: "v3", auth });
-
-async function listAllFiles(folderId, pageToken = null, acc = []) {
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and trashed=false`,
-    fields: "nextPageToken, files(id,name,mimeType,size,modifiedTime,webViewLink)",
-    pageSize: 1000,
-    pageToken: pageToken || undefined,
-  });
-
-  acc.push(...(res.data.files || []));
-  if (res.data.nextPageToken) {
-    return listAllFiles(folderId, res.data.nextPageToken, acc);
+function parseBody(event) {
+  try {
+    return event.body ? JSON.parse(event.body) : {};
+  } catch {
+    return {};
   }
-  return acc;
 }
 
 export async function handler(event) {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: cors(), body: "" };
-  }
-  if (!isAuthorized(event)) {
-    return { statusCode: 401, headers: cors(), body: JSON.stringify({ error: "unauthorized" }) };
-  }
+  if (event.httpMethod === "OPTIONS") return json(200, { ok: true });
 
   try {
-    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
-    const files = await listAllFiles(folderId);
+    const body = parseBody(event);
 
-    return {
-      statusCode: 200,
-      headers: { ...cors(), "Content-Type": "application/json" },
-      body: JSON.stringify({ folder_id: folderId, count: files.length, files }),
-    };
-  } catch (e) {
-    return {
-      statusCode: 500,
-      headers: { ...cors(), "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "drive_list_failed", details: String(e?.message || e) }),
-    };
+    // Aceita folder_id vindo do body OU querystring (pra não quebrar testes)
+    const folderId =
+      body.folder_id ||
+      event.queryStringParameters?.folder_id ||
+      "root";
+
+    const drive = getDrive();
+
+    // Lista arquivos dentro da pasta
+    // Se folderId for "root", lista do Meu Drive da conta de serviço
+    const q =
+      folderId === "root"
+        ? "trashed=false"
+        : `'${folderId}' in parents and trashed=false`;
+
+    const res = await drive.files.list({
+      q,
+      pageSize: 50,
+      fields: "files(id,name,mimeType,modifiedTime,size,webViewLink)",
+      orderBy: "modifiedTime desc",
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    return json(200, {
+      ok: true,
+      folder_id: folderId,
+      count: res.data.files?.length || 0,
+      files: res.data.files || [],
+    });
+  } catch (err) {
+    return json(500, {
+      ok: false,
+      error: "drive_list_failed",
+      details: err?.message || String(err),
+      hint:
+        "Confirme: GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, GOOGLE_PROJECT_ID no Netlify + pasta compartilhada com a service account.",
+    });
   }
 }
-
